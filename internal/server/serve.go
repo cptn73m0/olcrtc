@@ -128,12 +128,18 @@ type handshakeResult struct {
 	deviceID  string
 }
 
+// staleStreamBudget bounds how long a handshake waits for a peer HELLO while
+// application streams keep arriving. After a session reinstall the peer can
+// still be writing data streams, and their first bytes parse as an oversized
+// frame header, so they must be skipped rather than counted as fatal errors.
+const staleStreamBudget = 10 * time.Second
+
 func (s *Server) acceptHandshake(
 	ctx context.Context,
 	session *smux.Session,
 ) (*smux.Stream, handshakeResult, bool) {
-	const maxStaleRetries = 3
-	for retry := 0; retry <= maxStaleRetries; retry++ {
+	deadline := time.Now().Add(staleStreamBudget)
+	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -149,8 +155,8 @@ func (s *Server) acceptHandshake(
 		_ = stream.SetDeadline(time.Time{})
 		if err != nil {
 			_ = stream.Close()
-			if errors.Is(err, framing.ErrFrameTooLarge) && retry < maxStaleRetries {
-				logger.Debugf("handshake: discarding stale stream (attempt %d): %v", retry+1, err)
+			if errors.Is(err, framing.ErrFrameTooLarge) && time.Now().Before(deadline) {
+				logger.Debugf("handshake: discarding stale stream: %v", err)
 				continue
 			}
 			logger.Warnf("handshake failed: %v", err)
@@ -164,7 +170,6 @@ func (s *Server) acceptHandshake(
 		logger.Infof("session %s opened (device=%s)", sessionID, hello.DeviceID)
 		return stream, handshakeResult{sessionID: sessionID, deviceID: hello.DeviceID}, true
 	}
-	return nil, handshakeResult{}, false
 }
 
 func (s *Server) localPeerID() string {

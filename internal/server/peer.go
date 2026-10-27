@@ -351,12 +351,12 @@ func (s *Server) getPeerSession(peerID string) *peerSession {
 }
 
 func (s *Server) acceptPeerHandshake(ctx context.Context, peer *peerSession) {
-	const maxStaleRetries = 3
 	_, session := peer.controlPlane()
 	if session == nil {
 		return
 	}
-	for retry := 0; retry <= maxStaleRetries; retry++ {
+	deadline := time.Now().Add(staleStreamBudget)
+	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			if ctx.Err() == nil {
@@ -370,8 +370,8 @@ func (s *Server) acceptPeerHandshake(ctx context.Context, peer *peerSession) {
 		_ = stream.SetDeadline(time.Time{})
 		if err != nil {
 			_ = stream.Close()
-			if errors.Is(err, framing.ErrFrameTooLarge) && retry < maxStaleRetries {
-				logger.Debugf("handshake peer=%s: stale stream retry %d: %v", peer.peerID, retry+1, err)
+			if errors.Is(err, framing.ErrFrameTooLarge) && time.Now().Before(deadline) {
+				logger.Debugf("handshake peer=%s: discarding stale stream: %v", peer.peerID, err)
 				continue
 			}
 			logger.Warnf("handshake peer=%s failed: %v", peer.peerID, err)
